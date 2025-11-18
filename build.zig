@@ -152,6 +152,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    const update_fixtures_exe = b.addExecutable(.{
+        .name = "kalix-update-fixtures",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/update_fixtures.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "kalix", .module = mod },
+                .{ .name = "zvm", .module = zvm_mod },
+            },
+        }),
+    });
+
+    const run_update_fixtures = b.addRunArtifact(update_fixtures_exe);
+    const update_fixtures_step = b.step("update-fixtures", "Regenerate lowering fixtures");
+    update_fixtures_step.dependOn(&run_update_fixtures.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means

@@ -864,3 +864,42 @@ test "lower comparisons" {
     try testing.expect(saw_lte);
     try testing.expect(saw_gte);
 }
+
+test "lower table assignments and loads" {
+    const source =
+        "contract Tables {\n" ++
+        "    table balances: Map<Address, u64>;\n" ++
+        "    fn sync(key: u64, value: u64) {\n" ++
+        "        state.balances[key] = value;\n" ++
+        "        let current = state.balances[key];\n" ++
+        "        state.balances[key] = current;\n" ++
+        "    }\n" ++
+        "}\n";
+
+    var tree = try parseSource(source);
+    defer tree.deinit();
+
+    var builder = IRBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.lowerModule(tree.getModule());
+
+    var load_count: usize = 0;
+    var store_count: usize = 0;
+
+    for (builder.instructions.items) |instr| {
+        switch (instr) {
+            .load_table => |op| {
+                load_count += 1;
+                try testing.expectEqual(@as(u64, 0), op.slot);
+            },
+            .store_table => |op| {
+                store_count += 1;
+                try testing.expectEqual(@as(u64, 0), op.slot);
+            },
+            else => {},
+        }
+    }
+
+    try testing.expectEqual(@as(usize, 1), load_count);
+    try testing.expectEqual(@as(usize, 2), store_count);
+}

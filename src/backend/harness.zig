@@ -376,6 +376,42 @@ test "harness executes table store and load" {
     try testing.expectEqual(@as(ir.U256, 42), stored);
 }
 
+test "harness executes table updates from source" {
+    const source =
+        "contract Tables {\n" ++
+        "    table balances: Map<Address, u64>;\n" ++
+        "    fn update(key: u64, value: u64) {\n" ++
+        "        state.balances[key] = value;\n" ++
+        "        let mut next = state.balances[key];\n" ++
+        "        next = next + 1;\n" ++
+        "        state.balances[key] = next;\n" ++
+        "    }\n" ++
+        "}\n";
+
+    var tree = try parser.parseModule(testing.allocator, source);
+    defer tree.deinit();
+
+    var builder = lowering.IRBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.lowerModule(tree.getModule());
+
+    var generator = codegen.CodeGen.init(testing.allocator);
+    defer generator.deinit();
+    const bytecode = try generator.emit(builder.instructions.items);
+
+    var harness = Harness.init(testing.allocator);
+    defer harness.deinit();
+    const key_value: ir.U256 = 7;
+    const initial_value: ir.U256 = 42;
+    try harness.setLocal(0, key_value);
+    try harness.setLocal(1, initial_value);
+
+    try harness.run(bytecode);
+
+    const hashed_slot = computeTableHash(@as(ir.U256, 0), key_value);
+    try testing.expectEqual(initial_value + 1, harness.getStorage(hashed_slot));
+}
+
 test "harness executes comparison ops" {
     const program = [_]ir.IR{
         ir.IR{ .push = .{ .value = ir.Register{ .constant = @as(ir.U256, 5) } } },

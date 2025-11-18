@@ -1,44 +1,31 @@
-# Kalix Lowering Conventions
+# Lowering Conventions
 
-This memo captures the rules Phase 2 uses when translating the semantic AST into the Kalix IR and downstream ZVM bytecode.
+This note captures the current rules that the Kalix backend applies when converting the high-level AST into IR instructions. It is intentionally short so the lowering logic can evolve without re-reading the source code to understand expectations.
 
-## Register Model
-
-- IR registers are symbolic handles (`stack`, `temp`, `constant`).
-- `stack` indices correspond to function-local slots (parameters + `let` bindings) allocated sequentially.
-- `temp` indices denote transient values produced by expression lowering; lifetimes are single-expression.
-- Constants embed the literal value (`U256`) directly and do not allocate storage.
-
-## Local Bindings
-
-- Parameters are assigned slots in declaration order beginning at `0`.
-- `let` bindings allocate the next available slot; rebinding the same name is rejected by the semantic stage and treated as an error during lowering.
-- Reads of locals emit `load_local` into a fresh temp register; writes emit `store_local` with the slot and source register.
-
-## State Access
-
-- Each contract `state` member receives a deterministic storage slot via `StateMapper`.
-- `state.foo` expression emits `load_state` into a temp register.
-- `state.foo = expr` emits `store_state` with the resolved slot and the value register.
-- `table` access is not yet lowered; upcoming work will extend the mapper to hashed keys.
-
-## Expressions Supported
-
-- Arithmetic operators `+ - * / %` lower to the corresponding `add/sub/mul/div/mod_` IR variants.
-- Integer literals must be non-negative; negative literals require an explicit unary minus handling pass.
-- Boolean literals map to constants `0`/`1`.
-- Identifier references resolve to local loads; `state` identifiers are only valid as member bases.
-- Assignment expressions return the stored register to enable chaining.
+## Register Allocation
+- Parameters and `let` bindings are assigned monotonically increasing local slots per function. Re-using a name is rejected during lowering.
+- Temporary registers (`ir.Register.temp`) are generated for every expression that materialises a value. They are not re-used within a function; the code generator currently treats temporaries as stack positions.
+- The lowering pass treats stack discipline explicitly: evaluating an expression leaves its value on the stack so subsequent IR instructions can consume it without extra moves.
 
 ## Control Flow
+- Each function receives a dedicated entry label. Structured control flow (`if`, `while`, blocks) is lowered into explicit labels and jumps.
+- `if` statements always emit a join label even when both branches return; this keeps the instruction stream well-formed for later analysis.
+- `while` loops use three labels: condition, body, and exit. The body is only re-entered when it does not produce an early `return`.
 
-- Each function receives a synthetic `label` at entry and a trailing `ret` if no explicit return occurs.
-- `return` statements emit `ret` immediately and short-circuit further lowering for the enclosing block.
-- Branching constructs are not yet lowered; future milestones will introduce block scoping and jump targets.
+## Storage Resources
+- Contract `state` declarations receive sequential 64-bit slots, followed by `table` declarations.
+- Member accesses of the form `state.foo` become `load_state`/`store_state` IR instructions using the mapped slot.
+- Table indexing (`state.foo[key]`) lowers into `load_table`/`store_table` instructions. The key expression is evaluated immediately before table operations so it remains on the stack for hashing.
 
-## Code Generation Bridge
+## Table Hashing
+- Both table loads and stores emit a `TABLEHASH` sequence in code generation: push slot, swap with the key, hash, then delegate to `SLOAD`/`SSTORE`.
+- Lowering ensures the order of evaluation keeps the key above the value on the stack for stores, matching the hashing helper used in the harness.
 
-- `codegen.CodeGen` currently maps arithmetic/local/state IR instructions to pseudo-ZVM opcodes for smoke tests.
-- Real bytecode emission will later replace the placeholder opcodes with canonical ZVM encodings and integrate stack scheduling.
+## Fixture Generation
+- `renderControlFlowFixture` renders a canonical instruction listing for a representative control-flow heavy contract.
+- `verifyControlFlowFixture` regenerates the fixture and compares it to `src/backend/testdata/lowering/control_flow.json`. Running `zig build update-fixtures` rewrites the fixture when IR changes are intentional.
 
-These conventions span the current lowering pass and will evolve as we introduce control flow, tables, events, and full bytecode emission.
+## Testing Checklist
+- Add a unit test in `lowering.zig` whenever a new syntactic feature emits bespoke IR.
+- Add corresponding code generation or harness tests to guarantee the emitted instructions execute as intended.
+- Update the fixture (via the build step) when control flow output changes.
