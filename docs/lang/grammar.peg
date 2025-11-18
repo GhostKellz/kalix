@@ -1,0 +1,89 @@
+Module        <- _ ContractDecl* EOF
+
+ContractDecl  <- 'contract' __ Identifier __ '{' _ ContractItem* '}' _
+ContractItem  <- StateDecl / TableDecl / EventDecl / FnDecl
+
+StateDecl     <- 'state' __ Identifier _ ':' _ TypeExpr _ ';' _
+TableDecl     <- 'table' __ Identifier _ ':' _ TypeExpr _ ';' _
+EventDecl     <- 'event' __ Identifier _ '(' _ EventParamList? _ ')' _ ';' _
+EventParamList<- EventParam (_ ',' _ EventParam)*
+EventParam    <- Identifier _ ':' _ TypeExpr
+
+FnDecl        <- 'fn' __ Identifier _ '(' _ ParamList? _ ')' _ FnQual* _ ReturnType? _ Block
+FnQual        <- 'view' __ / 'payable' __ / 'pub' __
+ReturnType    <- '->' _ TypeExpr
+
+ParamList     <- Param (_ ',' _ Param)*
+Param         <- Mutability? Identifier _ ':' _ TypeExpr
+Mutability    <- 'mut' __ / 'const' __
+
+TypeExpr      <- Identifier TypeArgs?
+TypeArgs      <- _ '<' _ TypeExpr (_ ',' _ TypeExpr)* _ '>'
+
+Block         <- '{' _ Statement* '}' _
+
+Statement     <- LetStmt / ReturnStmt / ExprStmt / Block
+LetStmt       <- 'let' __ Mutability? Identifier _ '=' _ Expression _ ';' _
+ReturnStmt    <- 'return' (_ Expression)? _ ';' _
+ExprStmt      <- Expression _ ';' _
+
+Expression    <- Assignment
+Assignment    <- LogicalOr (_ '=' _ Assignment)?
+LogicalOr     <- LogicalAnd (_ '||' _ LogicalAnd)*
+LogicalAnd    <- Equality (_ '&&' _ Equality)*
+Equality      <- Comparison (_ EqualityOp _ Comparison)*
+EqualityOp    <- '==' / '!='
+Comparison    <- Term (_ ComparisonOp _ Term)*
+ComparisonOp  <- '<=' / '>=' / '<' / '>'
+Term          <- Factor (_ AddOp _ Factor)*
+AddOp         <- '+' / '-'
+Factor        <- Unary (_ MulOp _ Unary)*
+MulOp         <- '*' / '/' / '%'
+Unary         <- UnaryOp Unary / Call
+UnaryOp       <- '!' / '-'
+Call          <- Primary (ArgumentList / MemberAccess)*
+ArgumentList  <- _ '(' _ Arguments? _ ')'
+Arguments     <- Expression (_ ',' _ Expression)*
+MemberAccess  <- _ '.' _ Identifier
+Primary       <- Literal / Identifier / Grouped
+Grouped       <- '(' _ Expression _ ')'
+
+Literal       <- BoolLiteral / StringLiteral / IntegerLiteral
+BoolLiteral   <- 'true' !IdentChar / 'false' !IdentChar
+StringLiteral <- '"' StringChar* '"'
+StringChar    <- Escape / [^"\\]
+Escape        <- '\\' ["\\nrt]
+IntegerLiteral<- HexInt / BinInt / DecInt
+HexInt        <- '0x' [0-9a-fA-F_]+
+BinInt        <- '0b' [01_]+
+DecInt        <- [0-9] [0-9_]*
+
+Identifier    <- !Keyword IdentStart IdentPart*
+IdentStart    <- [_A-Za-z]
+IdentPart     <- [_A-Za-z0-9]
+
+Keyword       <- 'contract' !IdentChar
+               / 'state' !IdentChar
+               / 'table' !IdentChar
+               / 'event' !IdentChar
+               / 'fn' !IdentChar
+               / 'let' !IdentChar
+               / 'const' !IdentChar
+               / 'mut' !IdentChar
+               / 'return' !IdentChar
+               / 'view' !IdentChar
+               / 'payable' !IdentChar
+               / 'pub' !IdentChar
+               / 'true' !IdentChar
+               / 'false' !IdentChar
+
+IdentChar     <- [_A-Za-z0-9]
+
+_             <- (Space / Comment)*
+__            <- (Space / Comment)+
+Space         <- [ \t\r\n]
+Comment       <- LineComment / BlockComment
+LineComment   <- '//' [^\n]*
+BlockComment  <- '/*' (BlockComment / [^*] / '\n' / ('*' !'/'))* '*/'
+
+EOF           <- !.

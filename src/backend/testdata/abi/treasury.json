@@ -1,0 +1,28 @@
+{
+  "contract": "Treasury",
+  "functions": [
+    {
+      "name": "deposit",
+      "selector": "0x3EC3E379",
+      "visibility": "public",
+      "mutability": "nonpayable",
+      "inputs": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "events": [],
+  "state_variables": [
+    {
+      "name": "balance",
+      "slot": 0,
+      "type": "u64",
+      "visibility": "public"
+    }
+  ],
+  "tables": []
+}
