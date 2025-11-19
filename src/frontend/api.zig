@@ -48,14 +48,14 @@ pub fn analyzeSource(allocator: std.mem.Allocator, source: []const u8) !Analysis
     var diagnostics: []const Diagnostic = &[_]Diagnostic{};
     var owns_diagnostics = false;
     var metadata = semantics.Metadata{};
-    var abi_list: std.ArrayList(ContractAbi) = .empty;
+    var abi_list: std.ArrayListUnmanaged(ContractAbi) = .{};
     var abi_cleanup = true;
     defer if (abi_cleanup) {
         for (abi_list.items) |abi| {
             allocator.free(abi.name);
             allocator.free(abi.json);
         }
-        abi_list.deinit();
+        abi_list.deinit(allocator);
     };
 
     if (semantics.analyze(allocator, &tree, &metadata)) |_| {} else |err| switch (err) {
@@ -80,14 +80,14 @@ pub fn analyzeSource(allocator: std.mem.Allocator, source: []const u8) !Analysis
             allocator.free(abi_json);
             return dup_err;
         };
-        abi_list.append(.{ .name = name_copy, .json = abi_json }) catch |append_err| {
+        abi_list.append(allocator, .{ .name = name_copy, .json = abi_json }) catch |append_err| {
             allocator.free(name_copy);
             allocator.free(abi_json);
             return append_err;
         };
     }
 
-    const abi_slice = abi_list.toOwnedSlice() catch |err| switch (err) {
+    const abi_slice = abi_list.toOwnedSlice(allocator) catch |err| switch (err) {
         error.OutOfMemory => return err,
     };
     abi_cleanup = false;
