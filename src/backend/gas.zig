@@ -84,6 +84,8 @@ fn instructionCost(instr: ir.IR) u64 {
         .mul => opcodeCost(zvm_opcode.MUL),
         .div => opcodeCost(zvm_opcode.DIV),
         .mod_ => opcodeCost(zvm_opcode.MOD),
+        .and_ => opcodeCost(zvm_opcode.AND),
+        .or_ => opcodeCost(zvm_opcode.OR),
         .eq => opcodeCost(zvm_opcode.EQ),
         .lt => opcodeCost(zvm_opcode.LT),
         .gt => opcodeCost(zvm_opcode.GT),

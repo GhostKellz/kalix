@@ -100,6 +100,8 @@ pub const IR = union(enum) {
     mul: BinaryOp,
     div: BinaryOp,
     mod_: BinaryOp,
+    and_: BinaryOp,
+    or_: BinaryOp,
 
     eq: BinaryOp,
     lt: BinaryOp,

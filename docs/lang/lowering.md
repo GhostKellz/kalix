@@ -11,6 +11,7 @@ This note captures the current rules that the Kalix backend applies when convert
 - Each function receives a dedicated entry label. Structured control flow (`if`, `while`, blocks) is lowered into explicit labels and jumps.
 - `if` statements always emit a join label even when both branches return; this keeps the instruction stream well-formed for later analysis.
 - `while` loops use three labels: condition, body, and exit. The body is only re-entered when it does not produce an early `return`.
+- Cascaded `else if` chains reuse the same join handling, and boolean short-circuit expressions (`&&`, `||`, `!`) compile to dedicated logical IR instructions.
 
 ## Storage Resources
 - Contract `state` declarations receive sequential 64-bit slots, followed by `table` declarations.
@@ -29,3 +30,7 @@ This note captures the current rules that the Kalix backend applies when convert
 - Add a unit test in `lowering.zig` whenever a new syntactic feature emits bespoke IR.
 - Add corresponding code generation or harness tests to guarantee the emitted instructions execute as intended.
 - Update the fixture (via the build step) when control flow output changes.
+
+## Gas Reporting
+- `CodeGen.emit` now tracks the latest gas report internally. Call `gasReport()` for read-only access or `takeGasReport()` to transfer ownership of the aggregated metrics (including per-function data).
+- The artifact builder consumes this report directly, so downstream tooling receives the same accounting that the emitter used without recomputing totals.

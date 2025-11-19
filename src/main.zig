@@ -71,7 +71,32 @@ fn runCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
         defer file.close();
         try file.writeAll(serialized);
 
-        std.log.info("wrote {s} (gas: {d})", .{ destination, artifact.gas.total });
+        const gas_report = artifact.gas;
+        std.log.info(
+            "wrote {s} (gas total: {d}, state L{d}/S{d}, table L{d}/S{d})",
+            .{
+                destination,
+                gas_report.total,
+                gas_report.storage.state_loads,
+                gas_report.storage.state_stores,
+                gas_report.storage.table_loads,
+                gas_report.storage.table_stores,
+            },
+        );
+
+        for (gas_report.functions) |fn_report| {
+            std.log.info(
+                "  fn {s}: gas {d}, state L{d}/S{d}, table L{d}/S{d}",
+                .{
+                    fn_report.name,
+                    fn_report.gas,
+                    fn_report.storage.state_loads,
+                    fn_report.storage.state_stores,
+                    fn_report.storage.table_loads,
+                    fn_report.storage.table_stores,
+                },
+            );
+        }
     }
 }
 

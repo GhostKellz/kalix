@@ -64,8 +64,6 @@ pub fn buildContract(allocator: std.mem.Allocator, contract: ast.Contract) Build
 
     const instructions = builder.instructions.items;
 
-    var gas_report = gas.GasAnalyzer.analyze(instructions);
-
     var dispatch_entries = std.ArrayListUnmanaged(FunctionDispatch){};
     defer dispatch_entries.deinit(allocator);
     try collectDispatchEntries(allocator, lowering.getFunctions(&builder), &dispatch_entries);
@@ -76,7 +74,9 @@ pub fn buildContract(allocator: std.mem.Allocator, contract: ast.Contract) Build
     var generator = codegen.CodeGen.init(allocator);
     defer generator.deinit();
     generator.setAddressBase(layout.total_len);
-    const body_code = try generator.emit(instructions);
+    const body_code = try generator.emit(instructions, lowering.getFunctions(&builder));
+    var gas_report = generator.takeGasReport();
+    errdefer gas_report.deinit(allocator);
 
     var function_offsets = try allocator.alloc(usize, dispatch_entries.items.len);
     defer allocator.free(function_offsets);
@@ -99,11 +99,6 @@ pub fn buildContract(allocator: std.mem.Allocator, contract: ast.Contract) Build
     try final_code.appendSlice(allocator, body_code);
     const bytecode = try final_code.toOwnedSlice(allocator);
     defer allocator.free(bytecode);
-
-    const function_metrics = gas.GasAnalyzer.analyzeFunctions(allocator, instructions, lowering.getFunctions(&builder)) catch
-        return BuildError.OutOfMemory;
-    gas_report.functions = function_metrics;
-    errdefer gas_report.deinit(allocator);
 
     var abi = abi_builder.AbiBuilder.init(allocator);
     const abi_json = try abi.buildContract(contract);

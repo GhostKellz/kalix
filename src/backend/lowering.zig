@@ -234,6 +234,7 @@ pub const IRBuilder = struct {
             .integer_literal => |lit| try self.lowerIntegerLiteral(lit.value),
             .bool_literal => |lit| try self.lowerBoolLiteral(lit.value),
             .binary => |binary| try self.lowerBinary(ctx, binary),
+            .unary => |unary| try self.lowerUnary(ctx, unary),
             .assignment => |assignment| try self.lowerAssignment(ctx, assignment),
             .member => |member| try self.lowerMember(member),
             .index => |index_expr| try self.lowerIndex(ctx, index_expr),
@@ -315,6 +316,8 @@ pub const IRBuilder = struct {
             .star => ir.IR{ .mul = .{ .dest = dest, .left = left, .right = right } },
             .slash => ir.IR{ .div = .{ .dest = dest, .left = left, .right = right } },
             .percent => ir.IR{ .mod_ = .{ .dest = dest, .left = left, .right = right } },
+            .and_and => ir.IR{ .and_ = .{ .dest = dest, .left = left, .right = right } },
+            .or_or => ir.IR{ .or_ = .{ .dest = dest, .left = left, .right = right } },
             .equal_equal => ir.IR{ .eq = .{ .dest = dest, .left = left, .right = right } },
             .less => ir.IR{ .lt = .{ .dest = dest, .left = left, .right = right } },
             .greater => ir.IR{ .gt = .{ .dest = dest, .left = left, .right = right } },
@@ -326,6 +329,19 @@ pub const IRBuilder = struct {
 
         try self.emit(instruction);
         return dest;
+    }
+
+    fn lowerUnary(self: *IRBuilder, ctx: *FunctionContext, unary: ast.UnaryExpr) LoweringError!ir.Register {
+        switch (unary.op) {
+            token.TokenKind.bang => {
+                const value = try self.lowerExpr(ctx, unary.operand);
+                const dest = self.allocTemp();
+                const zero = ir.Register{ .constant = @as(ir.U256, 0) };
+                try self.emit(.{ .eq = .{ .dest = dest, .left = value, .right = zero } });
+                return dest;
+            },
+            else => return LoweringError.UnsupportedConstruct,
+        }
     }
 
     fn lowerIntegerLiteral(self: *IRBuilder, value: i128) LoweringError!ir.Register {
@@ -531,6 +547,8 @@ fn writeInstruction(buffer: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allo
         .mul => |op| try writeBinary(buffer, allocator, "mul", op),
         .div => |op| try writeBinary(buffer, allocator, "div", op),
         .mod_ => |op| try writeBinary(buffer, allocator, "mod", op),
+        .and_ => |op| try writeBinary(buffer, allocator, "and", op),
+        .or_ => |op| try writeBinary(buffer, allocator, "or", op),
         .eq => |op| try writeBinary(buffer, allocator, "eq", op),
         .lt => |op| try writeBinary(buffer, allocator, "lt", op),
         .gt => |op| try writeBinary(buffer, allocator, "gt", op),
@@ -592,14 +610,16 @@ pub fn renderControlFlowFixture(allocator: std.mem.Allocator) ![]u8 {
         "    state balance: u64;\n" ++
         "    table records: Map<Address, u64>;\n" ++
         "    event Notified(flag: bool);\n" ++
-        "    fn execute(flag: bool, key: Address, amount: u64) {\n" ++
+        "    fn execute(flag: bool, key: Address, amount: u64, threshold: u64) {\n" ++
         "        let mut total = amount;\n" ++
-        "        if flag {\n" ++
+        "        if flag && total > threshold {\n" ++
         "            state.balance = state.balance + total;\n" ++
-        "        } else {\n" ++
+        "        } else if !flag && total != threshold {\n" ++
         "            state.balance = state.balance - total;\n" ++
+        "        } else {\n" ++
+        "            total = threshold;\n" ++
         "        }\n" ++
-        "        while total {\n" ++
+        "        while total > threshold {\n" ++
         "            state.records[key] = total;\n" ++
         "            total = total - 1;\n" ++
         "        }\n" ++
@@ -902,4 +922,38 @@ test "lower table assignments and loads" {
 
     try testing.expectEqual(@as(usize, 1), load_count);
     try testing.expectEqual(@as(usize, 2), store_count);
+}
+
+test "lower logical control flow" {
+    const source =
+        "contract Logic {\n" ++
+        "    fn branch(flag: bool, ready: bool) {\n" ++
+        "        let mut guard = 0;\n" ++
+        "        if flag && ready {\n" ++
+        "            guard = guard + 1;\n" ++
+        "        } else if !flag || ready {\n" ++
+        "            guard = guard + 2;\n" ++
+        "        }\n" ++
+        "    }\n" ++
+        "}\n";
+
+    var tree = try parseSource(source);
+    defer tree.deinit();
+
+    var builder = IRBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.lowerModule(tree.getModule());
+
+    var saw_and = false;
+    var saw_or = false;
+    for (builder.instructions.items) |instr| {
+        switch (instr) {
+            .and_ => saw_and = true,
+            .or_ => saw_or = true,
+            else => {},
+        }
+    }
+
+    try testing.expect(saw_and);
+    try testing.expect(saw_or);
 }

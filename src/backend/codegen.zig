@@ -3,6 +3,7 @@ const ir = @import("ir.zig");
 const zvm = @import("zvm");
 const zvm_opcode = zvm.Opcode;
 const gas = @import("gas.zig");
+const lowering = @import("lowering.zig");
 
 const GasAnalyzer = gas.GasAnalyzer;
 const LabelEntry = struct {
@@ -22,6 +23,8 @@ pub const Opcode = enum(u8) {
     mul = @intFromEnum(zvm_opcode.MUL),
     div = @intFromEnum(zvm_opcode.DIV),
     mod_ = @intFromEnum(zvm_opcode.MOD),
+    and_ = @intFromEnum(zvm_opcode.AND),
+    or_ = @intFromEnum(zvm_opcode.OR),
     eq = @intFromEnum(zvm_opcode.EQ),
     lt = @intFromEnum(zvm_opcode.LT),
     gt = @intFromEnum(zvm_opcode.GT),
@@ -45,25 +48,46 @@ pub const CodeGen = struct {
     storage_profile: gas.StorageProfile = .{},
     label_cache: std.ArrayListUnmanaged(LabelEntry) = .{},
     address_base: usize = 0,
+    last_report: gas.GasReport = .{},
 
     pub fn init(allocator: std.mem.Allocator) CodeGen {
-        return .{ .allocator = allocator, .bytecode = .{}, .last_gas = 0, .label_cache = .{}, .address_base = 0 };
+        return .{
+            .allocator = allocator,
+            .bytecode = .{},
+            .last_gas = 0,
+            .storage_profile = .{},
+            .label_cache = .{},
+            .address_base = 0,
+            .last_report = .{},
+        };
     }
 
     pub fn deinit(self: *CodeGen) void {
         self.bytecode.deinit(self.allocator);
         self.label_cache.deinit(self.allocator);
+        self.last_report.deinit(self.allocator);
     }
 
-    pub fn emit(self: *CodeGen, instructions: []const ir.IR) CodeGenError![]const u8 {
+    pub fn emit(
+        self: *CodeGen,
+        instructions: []const ir.IR,
+        functions: ?[]const lowering.FunctionEntry,
+    ) CodeGenError![]const u8 {
         self.bytecode.clearRetainingCapacity();
         self.label_cache.clearRetainingCapacity();
+        self.last_report.deinit(self.allocator);
         var label_offsets = std.AutoHashMap(u32, usize).init(self.allocator);
         defer label_offsets.deinit();
 
-        const gas_report = GasAnalyzer.analyze(instructions);
+        var gas_report = GasAnalyzer.analyze(instructions);
+        if (functions) |fn_entries| {
+            const reports = GasAnalyzer.analyzeFunctions(self.allocator, instructions, fn_entries) catch
+                return CodeGenError.OutOfMemory;
+            gas_report.functions = reports;
+        }
         self.last_gas = gas_report.total;
         self.storage_profile = gas_report.storage;
+        self.last_report = gas_report;
 
         var offset: usize = 0;
         for (instructions) |instr| {
@@ -93,6 +117,16 @@ pub const CodeGen = struct {
         return null;
     }
 
+    pub fn gasReport(self: *const CodeGen) *const gas.GasReport {
+        return &self.last_report;
+    }
+
+    pub fn takeGasReport(self: *CodeGen) gas.GasReport {
+        const report = self.last_report;
+        self.last_report = .{};
+        return report;
+    }
+
     fn emitInstruction(self: *CodeGen, instr: ir.IR, label_offsets: *std.AutoHashMap(u32, usize)) CodeGenError!void {
         switch (instr) {
             .label => {},
@@ -101,6 +135,8 @@ pub const CodeGen = struct {
             .mul => try self.appendOpcode(.mul),
             .div => try self.appendOpcode(.div),
             .mod_ => try self.appendOpcode(.mod_),
+            .and_ => try self.appendOpcode(.and_),
+            .or_ => try self.appendOpcode(.or_),
             .eq => try self.appendOpcode(.eq),
             .lt => try self.appendOpcode(.lt),
             .gt => try self.appendOpcode(.gt),
@@ -268,7 +304,7 @@ pub const CodeGen = struct {
 
         return switch (instr) {
             .label => 0,
-            .add, .sub, .mul, .div, .mod_, .eq, .lt, .gt, .ret => 1,
+            .add, .sub, .mul, .div, .mod_, .and_, .or_, .eq, .lt, .gt, .ret => 1,
             .ne, .lte, .gte => boolComparisonSize,
             .load_local, .store_local => push_u16 + 1,
             .load_state, .store_state => push_u64 + 1,
@@ -320,7 +356,6 @@ fn pushEncodedSize(value: ir.U256) usize {
 }
 
 const testing = std.testing;
-const lowering = @import("lowering.zig");
 const parser = @import("../frontend/parser.zig");
 
 // [Truncated for brevity; rest of original file continues]
@@ -345,7 +380,7 @@ test "codegen emits bytecode for deposit" {
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
 
-    const bytes = try generator.emit(builder.instructions.items);
+    const bytes = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
     try testing.expectEqual(@as(usize, 34), bytes.len);
     try testing.expect(bytes[0] == @intFromEnum(zvm_opcode.PUSH2));
     try testing.expect(bytes[3] == @intFromEnum(Opcode.load_local));
@@ -356,6 +391,10 @@ test "codegen emits bytecode for deposit" {
     try testing.expectEqual(@as(u32, 1), profile.state_stores);
     try testing.expectEqual(@as(u32, 0), profile.table_loads);
     try testing.expectEqual(@as(u32, 0), profile.table_stores);
+    const report = generator.gasReport();
+    try testing.expectEqual(@as(u64, 518), report.total);
+    try testing.expectEqual(@as(usize, 1), report.functions.len);
+    try testing.expect(std.mem.eql(u8, report.functions[0].name, "deposit"));
 }
 
 test "codegen encodes jumps with label offsets" {
@@ -369,7 +408,7 @@ test "codegen encodes jumps with label offsets" {
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
 
-    const bytes = try generator.emit(&instructions);
+    const bytes = try generator.emit(&instructions, null);
     try testing.expectEqual(@as(usize, 7), bytes.len);
     try testing.expect(bytes[0] == @intFromEnum(zvm_opcode.PUSH4));
     const offset = std.mem.readInt(u32, bytes[1..5], .big);
@@ -388,7 +427,7 @@ test "codegen emits composite comparisons" {
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
 
-    const bytes = try generator.emit(&instructions);
+    const bytes = try generator.emit(&instructions, null);
     try testing.expectEqual(@as(usize, 12), bytes.len);
 
     try testing.expect(bytes[0] == @intFromEnum(zvm_opcode.EQ));
@@ -407,6 +446,21 @@ test "codegen emits composite comparisons" {
     try testing.expect(bytes[11] == @intFromEnum(zvm_opcode.XOR));
 }
 
+test "codegen emits logical operators" {
+    const instructions = [_]ir.IR{
+        ir.IR{ .and_ = .{ .dest = .{ .temp = 0 }, .left = .{ .temp = 1 }, .right = .{ .temp = 2 } } },
+        ir.IR{ .or_ = .{ .dest = .{ .temp = 3 }, .left = .{ .temp = 4 }, .right = .{ .temp = 5 } } },
+    };
+
+    var generator = CodeGen.init(testing.allocator);
+    defer generator.deinit();
+
+    const bytes = try generator.emit(&instructions, null);
+    try testing.expectEqual(@as(usize, 2), bytes.len);
+    try testing.expect(bytes[0] == @intFromEnum(Opcode.and_));
+    try testing.expect(bytes[1] == @intFromEnum(Opcode.or_));
+}
+
 test "codegen emits table hash sequence" {
     const instructions = [_]ir.IR{
         ir.IR{ .load_table = .{ .dest = .{ .temp = 0 }, .slot = 7, .key = .{ .temp = 1 } } },
@@ -416,7 +470,7 @@ test "codegen emits table hash sequence" {
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
 
-    const bytes = try generator.emit(&instructions);
+    const bytes = try generator.emit(&instructions, null);
     try testing.expectEqual(@as(usize, 24), bytes.len);
 
     try testing.expect(bytes[0] == @intFromEnum(zvm_opcode.PUSH8));
@@ -460,7 +514,7 @@ test "codegen integrates composite comparisons from source" {
 
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytes = try generator.emit(builder.instructions.items);
+    const bytes = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var xor_count: usize = 0;
     for (bytes) |byte| {
@@ -490,7 +544,7 @@ test "codegen integrates table hashing from source" {
 
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytes = try generator.emit(builder.instructions.items);
+    const bytes = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var hash_count: usize = 0;
     var sload_count: usize = 0;
@@ -532,7 +586,7 @@ test "codegen emits branching control flow" {
 
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytes = try generator.emit(builder.instructions.items);
+    const bytes = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var jumpi_count: usize = 0;
     var jump_count: usize = 0;
@@ -564,7 +618,7 @@ test "codegen emits while loop backedge" {
 
     var generator = CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytes = try generator.emit(builder.instructions.items);
+    const bytes = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var jumpi_count: usize = 0;
     var backjump_count: usize = 0;

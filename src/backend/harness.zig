@@ -26,6 +26,7 @@ const BinaryOp = enum {
     lt,
     gt,
     bit_and,
+    bit_or,
     bit_xor,
 };
 
@@ -96,6 +97,7 @@ pub const Harness = struct {
                 .EQ => try self.binaryOp(.eq),
                 .LT => try self.binaryOp(.lt),
                 .GT => try self.binaryOp(.gt),
+                .OR => try self.binaryOp(.bit_or),
                 .AND => try self.binaryOp(.bit_and),
                 .XOR => try self.binaryOp(.bit_xor),
 
@@ -186,6 +188,7 @@ pub const Harness = struct {
             .lt => if (left < right) 1 else 0,
             .gt => if (left > right) 1 else 0,
             .bit_and => left & right,
+            .bit_or => left | right,
             .bit_xor => left ^ right,
         };
         try self.push(result);
@@ -284,7 +287,7 @@ test "harness executes deposit bytecode and updates storage" {
 
     var generator = codegen.CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytecode = try generator.emit(builder.instructions.items);
+    const bytecode = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var harness = Harness.init(testing.allocator);
     defer harness.deinit();
@@ -318,7 +321,7 @@ test "harness executes conditional branch" {
 
     var generator = codegen.CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytecode = try generator.emit(&instructions);
+    const bytecode = try generator.emit(&instructions, null);
 
     var harness_true = Harness.init(testing.allocator);
     defer harness_true.deinit();
@@ -360,7 +363,7 @@ test "harness executes table store and load" {
     var harness = Harness.init(testing.allocator);
     defer harness.deinit();
 
-    const store_bytes = try generator.emit(&store_program);
+    const store_bytes = try generator.emit(&store_program, null);
     try harness.setLocal(0, @as(ir.U256, 42));
     try harness.setLocal(1, @as(ir.U256, 7));
     try harness.run(store_bytes);
@@ -368,7 +371,7 @@ test "harness executes table store and load" {
     const expected_slot = computeTableHash(@as(ir.U256, 0), @as(ir.U256, 7));
     try testing.expectEqual(@as(ir.U256, 42), harness.getStorage(expected_slot));
 
-    const load_bytes = try generator.emit(&load_program);
+    const load_bytes = try generator.emit(&load_program, null);
     try harness.setLocal(1, @as(ir.U256, 7));
     try harness.run(load_bytes);
 
@@ -397,7 +400,7 @@ test "harness executes table updates from source" {
 
     var generator = codegen.CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytecode = try generator.emit(builder.instructions.items);
+    const bytecode = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var harness = Harness.init(testing.allocator);
     defer harness.deinit();
@@ -454,7 +457,7 @@ test "harness executes comparison ops" {
 
     var generator = codegen.CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytecode = try generator.emit(&program);
+    const bytecode = try generator.emit(&program, null);
 
     var harness = Harness.init(testing.allocator);
     defer harness.deinit();
@@ -477,6 +480,76 @@ test "harness executes comparison ops" {
     try testing.expectEqual(@as(ir.U256, 0), gte_false);
 }
 
+test "harness executes logical and or" {
+    const program = [_]ir.IR{
+        ir.IR{ .load_local = .{ .dest = .{ .temp = 0 }, .slot = 0 } },
+        ir.IR{ .load_local = .{ .dest = .{ .temp = 1 }, .slot = 1 } },
+        ir.IR{ .and_ = .{ .dest = .{ .temp = 2 }, .left = .{ .temp = 0 }, .right = .{ .temp = 1 } } },
+        ir.IR{ .store_local = .{ .slot = 2, .value = .{ .temp = 2 } } },
+
+        ir.IR{ .load_local = .{ .dest = .{ .temp = 3 }, .slot = 0 } },
+        ir.IR{ .load_local = .{ .dest = .{ .temp = 4 }, .slot = 3 } },
+        ir.IR{ .or_ = .{ .dest = .{ .temp = 5 }, .left = .{ .temp = 3 }, .right = .{ .temp = 4 } } },
+        ir.IR{ .store_local = .{ .slot = 4, .value = .{ .temp = 5 } } },
+
+        ir.IR{ .ret = .{ .value = null } },
+    };
+
+    var generator = codegen.CodeGen.init(testing.allocator);
+    defer generator.deinit();
+    const bytecode = try generator.emit(&program, null);
+
+    var harness = Harness.init(testing.allocator);
+    defer harness.deinit();
+    try harness.setLocal(0, @as(ir.U256, 1));
+    try harness.setLocal(1, @as(ir.U256, 1));
+    try harness.setLocal(3, @as(ir.U256, 0));
+
+    try harness.run(bytecode);
+
+    const and_result = harness.getLocal(2) orelse return TestError.MissingLocal;
+    const or_result = harness.getLocal(4) orelse return TestError.MissingLocal;
+
+    try testing.expectEqual(@as(ir.U256, 1), and_result);
+    try testing.expectEqual(@as(ir.U256, 1), or_result);
+}
+
+test "harness executes logical not from source" {
+    const source =
+        "contract Logic {\n" ++
+        "    state flag: bool;\n" ++
+        "    fn invert(flag: bool) {\n" ++
+        "        if !flag {\n" ++
+        "            state.flag = true;\n" ++
+        "        } else {\n" ++
+        "            state.flag = false;\n" ++
+        "        }\n" ++
+        "    }\n" ++
+        "}\n";
+
+    var tree = try parser.parseModule(testing.allocator, source);
+    defer tree.deinit();
+
+    var builder = lowering.IRBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.lowerModule(tree.getModule());
+
+    var generator = codegen.CodeGen.init(testing.allocator);
+    defer generator.deinit();
+    const bytecode = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
+
+    var harness = Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    try harness.setLocal(0, @as(ir.U256, 0));
+    try harness.run(bytecode);
+    try testing.expectEqual(@as(ir.U256, 1), harness.getStorage(@as(ir.U256, 0)));
+
+    try harness.setLocal(0, @as(ir.U256, 1));
+    try harness.run(bytecode);
+    try testing.expectEqual(@as(ir.U256, 0), harness.getStorage(@as(ir.U256, 0)));
+}
+
 test "harness returns zero for missing table entry" {
     const load_program = [_]ir.IR{
         ir.IR{ .load_local = .{ .dest = .{ .temp = 0 }, .slot = 1 } },
@@ -491,7 +564,7 @@ test "harness returns zero for missing table entry" {
     var harness = Harness.init(testing.allocator);
     defer harness.deinit();
 
-    const load_bytes = try generator.emit(&load_program);
+    const load_bytes = try generator.emit(&load_program, null);
     try harness.setLocal(1, @as(ir.U256, 99));
     try harness.run(load_bytes);
 
@@ -516,7 +589,7 @@ test "harness skips while loop when condition false" {
 
     var generator = codegen.CodeGen.init(testing.allocator);
     defer generator.deinit();
-    const bytecode = try generator.emit(builder.instructions.items);
+    const bytecode = try generator.emit(builder.instructions.items, lowering.getFunctions(&builder));
 
     var harness = Harness.init(testing.allocator);
     defer harness.deinit();
