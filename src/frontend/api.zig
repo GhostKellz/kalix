@@ -48,7 +48,7 @@ pub fn analyzeSource(allocator: std.mem.Allocator, source: []const u8) !Analysis
     var diagnostics: []const Diagnostic = &[_]Diagnostic{};
     var owns_diagnostics = false;
     var metadata = semantics.Metadata{};
-    var abi_list = std.ArrayList(ContractAbi).init(allocator);
+    var abi_list: std.ArrayList(ContractAbi) = .empty;
     var abi_cleanup = true;
     defer if (abi_cleanup) {
         for (abi_list.items) |abi| {
