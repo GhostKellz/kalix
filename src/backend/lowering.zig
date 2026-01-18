@@ -640,19 +640,24 @@ pub fn verifyControlFlowFixture(allocator: std.mem.Allocator) !void {
     const rendered = try renderControlFlowFixture(allocator);
     defer allocator.free(rendered);
 
-    const fixture = std.fs.cwd().readFileAlloc(
+    const io = testing.io;
+    const cwd = std.Io.Dir.cwd();
+
+    const fixture = cwd.readFileAlloc(
+        io,
         "src/backend/testdata/lowering/control_flow.json",
         allocator,
-        @enumFromInt(std.math.maxInt(usize)),
+        .unlimited,
     ) catch |err| switch (err) {
         error.FileNotFound => {
-            try std.fs.cwd().makePath("src/backend/testdata/lowering");
-            var file = try std.fs.cwd().createFile(
+            try cwd.createDirPath(io, "src/backend/testdata/lowering");
+            var file = try cwd.createFile(
+                io,
                 "src/backend/testdata/lowering/control_flow.json",
                 .{ .truncate = true },
             );
-            defer file.close();
-            try file.writeAll(rendered);
+            defer file.close(io);
+            try file.writeStreamingAll(io, rendered);
             return;
         },
         else => return err,

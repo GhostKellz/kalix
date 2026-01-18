@@ -648,8 +648,8 @@ const FunctionChecker = struct {
         return switch (expr.*) {
             .identifier => |ident| self.resolveIdentifier(ident.name, scope),
             .integer_literal => |lit| literalType(lit.value),
-            .bool_literal => |_| Type.bool,
-            .string_literal => |_| Type.string,
+            .bool_literal => Type.bool,
+            .string_literal => Type.string,
             .call => |call| self.checkCall(call, scope),
             .binary => |binary| self.checkBinary(binary, scope),
             .unary => |unary| self.checkUnary(unary, scope),

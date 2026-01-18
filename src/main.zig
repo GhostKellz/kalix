@@ -1,17 +1,18 @@
 const std = @import("std");
 const kalix = @import("kalix");
 
+const Io = std.Io;
+const Dir = Io.Dir;
+
 const CliError = error{InvalidArguments};
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const raw_args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, raw_args);
+    const raw_args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    runWithArgs(allocator, raw_args) catch |err| switch (err) {
+    runWithArgs(allocator, io, raw_args) catch |err| switch (err) {
         CliError.InvalidArguments => {
             std.log.err("usage: kalix <input.kalix> [output_dir]", .{});
             return;
@@ -20,26 +21,28 @@ pub fn main() !void {
     };
 }
 
-fn runWithArgs(allocator: std.mem.Allocator, raw_args: []const [:0]const u8) !void {
+fn runWithArgs(allocator: std.mem.Allocator, io: Io, raw_args: []const [:0]const u8) !void {
     var args = try allocator.alloc([]const u8, raw_args.len);
     defer allocator.free(args);
     for (raw_args, 0..) |arg, idx| {
         args[idx] = std.mem.sliceTo(arg, 0);
     }
-    try runCli(allocator, args);
+    try runCli(allocator, io, args);
 }
 
-fn runCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runCli(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void {
     if (args.len < 2 or args.len > 3) return CliError.InvalidArguments;
 
     const input_path = args[1];
     const output_dir = if (args.len == 3) args[2] else null;
 
+    const cwd = Dir.cwd();
+
     if (output_dir) |dir_path| {
-        try std.fs.cwd().makePath(dir_path);
+        try cwd.createDirPath(io, dir_path);
     }
 
-    const source = try std.fs.cwd().readFileAlloc(input_path, allocator, @enumFromInt(std.math.maxInt(usize)));
+    const source = try cwd.readFileAlloc(io, input_path, allocator, .unlimited);
     defer allocator.free(source);
 
     var tree = try kalix.parseModule(allocator, source);
@@ -67,9 +70,9 @@ fn runCli(allocator: std.mem.Allocator, args: []const []const u8) !void {
         const serialized = try kalix.backend.artifact_builder.serializeArtifact(allocator, artifact);
         defer allocator.free(serialized);
 
-        var file = try std.fs.cwd().createFile(destination, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(serialized);
+        var file = try cwd.createFile(io, destination, .{ .truncate = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, serialized);
 
         const gas_report = artifact.gas;
         std.log.info(
@@ -107,21 +110,21 @@ fn computeOutputPath(
     input_path: []const u8,
 ) ![]u8 {
     if (output_dir) |dir_path| {
-        return try std.fs.path.join(allocator, &.{ dir_path, file_name });
+        return try Dir.path.join(allocator, &.{ dir_path, file_name });
     }
 
     const parent = try parentDirectory(allocator, input_path);
     defer if (parent) |dir| allocator.free(dir);
 
     if (parent) |dir| {
-        return try std.fs.path.join(allocator, &.{ dir, file_name });
+        return try Dir.path.join(allocator, &.{ dir, file_name });
     }
 
     return try allocator.dupe(u8, file_name);
 }
 
 fn parentDirectory(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
-    const sep = std.fs.path.sep;
+    const sep = Dir.path.sep;
     if (std.mem.lastIndexOfScalar(u8, path, sep)) |idx| {
         const slice = if (idx == 0)
             path[0..1]
@@ -156,22 +159,21 @@ test "cli writes artifact next to contract" {
         "    }\n" ++
         "}\n";
 
-    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
-    defer testing.allocator.free(tmp_path);
-    const file_path = try std.fs.path.join(testing.allocator, &.{ tmp_path, "Treasury.kalix" });
+    // Construct path relative to cwd: .zig-cache/tmp/{sub_path}/Treasury.kalix
+    const file_path = try Dir.path.join(testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "Treasury.kalix" });
     defer testing.allocator.free(file_path);
 
     {
-        var file = try tmp.dir.createFile("Treasury.kalix", .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(source);
+        var file = try tmp.dir.createFile(testing.io, "Treasury.kalix", .{ .truncate = true });
+        defer file.close(testing.io);
+        try file.writeStreamingAll(testing.io, source);
     }
 
     const args = [_][]const u8{ "kalix", file_path };
-    try runCli(testing.allocator, &args);
+    try runCli(testing.allocator, testing.io, &args);
 
-    const output_file = try tmp.dir.openFile("Treasury.zvmc", .{});
-    defer output_file.close();
-    const size = try output_file.getEndPos();
-    try testing.expect(size > 0);
+    const output_file = try tmp.dir.openFile(testing.io, "Treasury.zvmc", .{});
+    defer output_file.close(testing.io);
+    const file_stat = try output_file.stat(testing.io);
+    try testing.expect(file_stat.size > 0);
 }
